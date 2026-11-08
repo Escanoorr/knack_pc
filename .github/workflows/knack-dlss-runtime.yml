@@ -1,0 +1,63 @@
+# knack: the two DLLs that DLSS needs next to gow3-probe.exe (docs/knack-dlss.md):
+#   gow3_dlss.dll   the bridge to NVIDIA's SDK (gpu/dlss_bridge), built here with MSVC;
+#   nvngx_dlss.dll  NVIDIA's DLSS runtime, from the SDK checkout below.
+# Separate from "Windows zip" on purpose: that package never carries NVIDIA's DLL (package.sh refuses
+# it), and a workflow of its own cannot conflict with that one when the project is updated.
+# Run by hand (Actions > Knack DLSS runtime > Run workflow). For your own use: NVIDIA's licence
+# (NVIDIA-DLSS-LICENSE.txt, in the artifact) governs the DLL; do not publish it.
+name: Knack DLSS runtime
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      # github.com/NVIDIA/DLSS pinned to a commit: its header defines render preset K (11) and its
+      # nvngx_dlss.dll is the DLSS 4 runtime that goes with it.
+      - name: NVIDIA DLSS SDK
+        run: |
+          git init C:/dlss-sdk
+          git -C C:/dlss-sdk fetch --depth 1 https://github.com/NVIDIA/DLSS 9981c6350dc58c0ce21f024fd65e31e851c31689
+          git -C C:/dlss-sdk checkout FETCH_HEAD
+          foreach ($file in 'include/nvsdk_ngx_vk.h', 'lib/Windows_x86_64/x64/nvsdk_ngx_s.lib', 'lib/Windows_x86_64/rel/nvngx_dlss.dll', 'LICENSE.txt') {
+              if (-not (Test-Path "C:/dlss-sdk/$file")) { throw "The DLSS SDK checkout has no $file" }
+          }
+      - name: Vulkan headers
+        run: git clone --depth 1 --branch vulkan-sdk-1.4.357.0 https://github.com/KhronosGroup/Vulkan-Headers C:/vulkan-headers
+      - name: Build gow3_dlss.dll
+        run: |
+          cmake -S gpu/dlss_bridge -B out/dlss-bridge -G "Visual Studio 17 2022" -A x64 `
+              -DDLSS_SDK_ROOT=C:/dlss-sdk -DVULKAN_INCLUDE=C:/vulkan-headers/include
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          cmake --build out/dlss-bridge --config Release
+          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+      - name: Gather
+        run: |
+          New-Item -ItemType Directory -Force dlss-runtime | Out-Null
+          Copy-Item out/dlss-bridge/Release/gow3_dlss.dll dlss-runtime/
+          Copy-Item C:/dlss-sdk/lib/Windows_x86_64/rel/nvngx_dlss.dll dlss-runtime/
+          Copy-Item C:/dlss-sdk/LICENSE.txt dlss-runtime/NVIDIA-DLSS-LICENSE.txt
+          @"
+          Copy gow3_dlss.dll and nvngx_dlss.dll into the bin folder of the game's package, next to
+          gow3-probe.exe, then start the game and turn on DLSS in the menu (Insert, Image tab).
+          For your own use only: NVIDIA's licence (NVIDIA-DLSS-LICENSE.txt) governs nvngx_dlss.dll.
+          "@ | Set-Content dlss-runtime/README.txt
+          $version = (Get-Item dlss-runtime/nvngx_dlss.dll).VersionInfo.FileVersion
+          "nvngx_dlss.dll version: $version" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY
+          Get-FileHash dlss-runtime/*.dll -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
+              Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: knack-dlss-runtime
+          path: dlss-runtime/
+          if-no-files-found: error
