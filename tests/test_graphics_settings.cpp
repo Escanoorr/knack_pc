@@ -128,6 +128,36 @@ int main() {
     assert(v.display_mode == G::Windowed && v.fps_limit == 0 && v.render_resolution == 0 && v.engine_fps == 120);
     assert(v.rcas_strength == 75 && v.frames_queued == 1);
     assert(v.async_shaders);
+    // knack: DLSS at the game's own resolution: off by default, preset K unless J or the driver's
+    // default is asked for, saved back, and the environment wins at start.
+    {
+        std::ofstream out(path);
+        out << "knack_dlss=1\nknack_dlss_preset=10\n";
+    }
+    Gow3Settings::Load();
+    assert(v.knack_dlss && v.knack_dlss_preset == 10);
+    Gow3Settings::Save();
+    const std::string dlss_saved = Read(path);
+    assert(dlss_saved.find("knack_dlss=1\n") != std::string::npos);
+    assert(dlss_saved.find("knack_dlss_preset=10\n") != std::string::npos);
+    {
+        std::ofstream out(path);
+        out << "knack_dlss=0\nknack_dlss_preset=7\n";  // 7 is not one of 0, 10, 11
+    }
+    Gow3Settings::Load();
+    assert(!v.knack_dlss && v.knack_dlss_preset == 11);
+    {
+        std::ofstream out(path);
+        out << "knack_dlss=0\nknack_dlss_preset=0\n";
+    }
+    Gow3Settings::Load();
+    assert(v.knack_dlss_preset == 0);  // the driver's default is a choice of its own
+    _putenv_s("GOW3_KNACK_DLSS", "1");
+    _putenv_s("GOW3_KNACK_DLSS_PRESET", "11");
+    Gow3Settings::Load();
+    assert(v.knack_dlss && v.knack_dlss_preset == 11);
+    _putenv_s("GOW3_KNACK_DLSS", "");
+    _putenv_s("GOW3_KNACK_DLSS_PRESET", "");
     {
         std::ofstream out(path);
         out << "cheat_double_jumps=1\ncheat_very_hard=1\n";

@@ -60,6 +60,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     camera_motion->SetObjectMotion(object_motion.get());
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets);
+    knack_dlss = std::make_unique<KnackDlss>(instance, scheduler, texture_cache, runtime);
     if (!EmulatorSettings.IsNullGPU()) {
         liverpool->BindRasterizer(this);
     }
@@ -294,6 +295,10 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
                 upscaler->OnSceneComposite();
             }
         }
+    }
+    // knack: the G-buffer pass (scene depth, velocity target) and the HDR scene colour for DLSS.
+    if (knack_dlss->Enabled()) {
+        knack_dlss->OnTargets(key.mrt_mask, cb_descs[0].first, cb_descs[5].first, db_desc.first);
     }
 }
 
@@ -1047,6 +1052,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     }
     DiagPassBoundary(false);
     const auto& regs = Regs();
+    // knack: the same pass ends DLSS's frame.
+    if (knack_dlss->Enabled() && regs.color_buffers[0] &&
+        FrameCapture::IsDisplayBuffer(regs.color_buffers[0].Address())) {
+        knack_dlss->OnDisplayPass();
+    }
     // gow3: the pass copying a finished frame to a display buffer; the previous draw's
     // target is that frame.
     if (camera_motion->Enabled() && regs.color_buffers[0] &&
@@ -1233,6 +1243,14 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
         draw_jitter = upscaler->Jitter();
     }
+    // knack: the same sub-pixel shift for every geometry pass that uses the scene depth.
+    if (knack_dlss->Enabled()) {
+        if (const auto j = knack_dlss->DrawJitter(db_desc.first, regs.num_indices,
+                                                  regs.num_instances.NumInstances());
+            j[0] != 0.0f || j[1] != 0.0f) {
+            draw_jitter = j;
+        }
+    }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
@@ -1384,6 +1402,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
         draw_jitter = upscaler->Jitter();
     }
+    if (knack_dlss->Enabled()) {
+        if (const auto j = knack_dlss->DrawJitter(db_desc.first, ~0u, 1);
+            j[0] != 0.0f || j[1] != 0.0f) {
+            draw_jitter = j;
+        }
+    }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
@@ -1462,6 +1486,9 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     };
     if (upscaler->Enabled()) {
         upscaler->OnDispatch(cs.pgm_hash);
+    }
+    if (knack_dlss->Enabled()) {
+        knack_dlss->OnDispatch(cs.pgm_hash);
     }
     if (ExecuteShaderHLE(cs, Regs(), cs_program, *this)) {
         return;

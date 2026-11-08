@@ -432,6 +432,30 @@ void ImageTab() {
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
+    // knack: DLSS at the game's own resolution (renderer_vulkan/vk_knack_dlss.h).
+    ImGui::SeparatorText("DLSS (experimental)");
+    if (BeginRows("##knack_dlss")) {
+        const bool dlss_ready = s.dlss_supported;
+        const char* dlss_problem = s.dlss_problem.load();
+        ImGui::BeginDisabled(!dlss_ready);
+        CheckRow("DLSS anti-aliasing", s.knack_dlss,
+                 dlss_ready ? "NVIDIA DLSS at the game's own resolution (DLAA): a cleaner, steadier image. "
+                              "It does not raise the frame rate."
+                 : dlss_problem ? dlss_problem
+                                : "Needs an NVIDIA RTX graphics card and gow3_dlss.dll plus nvngx_dlss.dll next "
+                                  "to the game.");
+        static const char* const dlss_preset_labels[] = {"K (recommended)", "J", "Driver default"};
+        static const int dlss_preset_values[] = {11, 10, 0};
+        ChoiceRow("DLSS preset", s.knack_dlss_preset, dlss_preset_labels, dlss_preset_values, 3,
+                  "K and J are the DLSS 4 models; K is the usual choice. Takes effect at once.");
+        ImGui::EndDisabled();
+        const int dlss_state = s.knack_dlss_state;
+        InfoRow("DLSS status", !s.knack_dlss     ? "off"
+                               : dlss_state == 2 ? "running"
+                               : dlss_state == 3 ? "failed (see last_run.log)"
+                                                 : "waiting for the 3D scene");
+        ImGui::EndTable();
+    }
     ImGui::SeparatorText("Textures (applied on restart)");
     if (BeginRows("##textures")) {
         static const char* const anisotropy_labels[] = {"Game default", "2x", "4x", "8x", "16x"};

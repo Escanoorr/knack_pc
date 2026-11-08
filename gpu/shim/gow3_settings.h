@@ -112,6 +112,12 @@ struct Values {
     /// DLSS (gow3_dlss.dll, NVIDIA RTX) is ready, or why not (null before the device exists).
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
+    /// Knack: DLSS at the game's own render size (renderer_vulkan/vk_knack_dlss.h). Live. The preset
+    /// is NGX's DLSS render preset hint: 0 the driver's default, 10 J, 11 K. The state is set by the
+    /// renderer: 0 off, 1 waiting for the game's 3D scene, 2 running, 3 failed.
+    std::atomic<bool> knack_dlss{false};
+    std::atomic<int> knack_dlss_preset{11};
+    std::atomic<int> knack_dlss_state{0};
 
     /// Startup settings for the explicit GOW3_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;

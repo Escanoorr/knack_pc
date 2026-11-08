@@ -150,6 +150,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.fsr4_auto_exposure = i != 0;
     } else if (key == "fsr4_invert_jitter") {
         v.fsr4_invert_jitter = i != 0;
+    } else if (key == "knack_dlss") {
+        v.knack_dlss = i != 0;
+    } else if (key == "knack_dlss_preset") {
+        v.knack_dlss_preset = value.empty() || !(i == 0 || i == 10 || i == 11) ? 11 : i;
     } else if (key == "live_resolution") {
         v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
     } else if (key == "output_res") {
@@ -202,6 +206,7 @@ void Load() {
         {"GOW3_ANISOTROPY", "anisotropy"},            {"GOW3_VIBRATION", "vibration"},
         {"GOW3_MOUSE_PROMPT_DISTANCE", "mouse_prompt_distance"}, {"GOW3_MOUSE_LOCK", "mouse_lock"},
         {"GOW3_MOUSE_AIM_STYLE", "mouse_aim_style"}, {"GOW3_MOUSE_AIM_SENSITIVITY", "mouse_aim_sensitivity"},
+        {"GOW3_KNACK_DLSS", "knack_dlss"},            {"GOW3_KNACK_DLSS_PRESET", "knack_dlss_preset"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env); value && value[0]) {
@@ -334,6 +339,8 @@ void Save() {
                        "mouse_aim_sensitivity=%d\n",
                  v.anisotropy.load(), v.vibration.load(), v.mouse_prompt_distance.load(), int(v.mouse_lock.load()),
                  v.mouse_aim_style.load(), v.mouse_aim_sensitivity.load());
+    std::fprintf(file, "knack_dlss=%d\nknack_dlss_preset=%d\n", int(v.knack_dlss.load()),
+                 v.knack_dlss_preset.load());
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");
