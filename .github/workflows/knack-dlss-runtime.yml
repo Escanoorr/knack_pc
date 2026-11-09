@@ -29,7 +29,7 @@ jobs:
           git init C:/dlss-sdk
           git -C C:/dlss-sdk fetch --depth 1 https://github.com/NVIDIA/DLSS 9981c6350dc58c0ce21f024fd65e31e851c31689
           git -C C:/dlss-sdk checkout FETCH_HEAD
-          foreach ($file in 'include/nvsdk_ngx_vk.h', 'lib/Windows_x86_64/x64/nvsdk_ngx_s.lib', 'lib/Windows_x86_64/rel/nvngx_dlss.dll', 'LICENSE.txt') {
+          foreach ($file in 'include/nvsdk_ngx_vk.h', 'lib/Windows_x86_64/x64/nvsdk_ngx_s.lib', 'lib/Windows_x86_64/rel/nvngx_dlss.dll', 'lib/Windows_x86_64/dev/nvngx_dlss.dll', 'utils/ngx_driver_onscreenindicator.reg', 'utils/ngx_driver_onscreenindicator_off.reg', 'LICENSE.txt') {
               if (-not (Test-Path "C:/dlss-sdk/$file")) { throw "The DLSS SDK checkout has no $file" }
           }
       - name: Vulkan headers
@@ -84,6 +84,21 @@ jobs:
           Copy-Item $bridge.FullName dlss-runtime/
           Copy-Item C:/dlss-sdk/lib/Windows_x86_64/rel/nvngx_dlss.dll dlss-runtime/
           Copy-Item C:/dlss-sdk/LICENSE.txt dlss-runtime/NVIDIA-DLSS-LICENSE.txt
+          # Only for diagnosing (docs/knack-dlss.md): NVIDIA's dev library, with its on-screen debug overlay.
+          New-Item -ItemType Directory -Force dlss-runtime/dev-debug | Out-Null
+          Copy-Item C:/dlss-sdk/lib/Windows_x86_64/dev/nvngx_dlss.dll dlss-runtime/dev-debug/
+          Copy-Item C:/dlss-sdk/utils/ngx_driver_onscreenindicator.reg dlss-runtime/dev-debug/
+          Copy-Item C:/dlss-sdk/utils/ngx_driver_onscreenindicator_off.reg dlss-runtime/dev-debug/
+          @"
+          Diagnostic copy of nvngx_dlss.dll (NVIDIA's dev library: it draws a watermark and has a debug overlay).
+          1. Keep the normal nvngx_dlss.dll somewhere else and put THIS one in the bin folder instead.
+          2. Double-click ngx_driver_onscreenindicator.reg (needs administrator rights) to turn the indicator on;
+             ngx_driver_onscreenindicator_off.reg turns it off again.
+          3. In the game, with DLSS on: Ctrl+Alt+F12 cycles the debug views (input colour, motion vectors, depth,
+             jitter); Ctrl+Alt+F9 tries the jitter sign and axis configurations; Ctrl+Alt+F6 is the accumulation
+             test for a still scene (DLSS Programming Guide, section 8).
+          4. Put the normal nvngx_dlss.dll back when done.
+          "@ | Set-Content dlss-runtime/dev-debug/LEIA-ME.txt
           @"
           Copy gow3_dlss.dll and nvngx_dlss.dll into the bin folder of the game's package, next to
           gow3-probe.exe, then start the game and turn on DLSS in the menu (Insert, Image tab).
