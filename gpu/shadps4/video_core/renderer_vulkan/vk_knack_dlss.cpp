@@ -55,9 +55,22 @@ KnackDlss::KnackDlss(const Instance& instance_, Scheduler& scheduler_,
     if (const char* env = std::getenv("GOW3_KNACK_DLSS_BEFORE_CS"); env && env[0]) {
         trigger_hash = std::strtoull(env, nullptr, 16);
     }
-    flip_motion_y = EnvFlag("GOW3_KNACK_DLSS_FLIP_MV_Y");
-    flip_jitter = EnvFlag("GOW3_KNACK_DLSS_FLIP_JITTER");
-    debug_motion = EnvFlag("GOW3_KNACK_DLSS_DEBUG");
+    // Test knobs (environment only). A sign can be turned for both axes or for one.
+    const bool flip_mv = EnvFlag("GOW3_KNACK_DLSS_FLIP_MV");
+    flip_mv_x = flip_mv || EnvFlag("GOW3_KNACK_DLSS_FLIP_MV_X");
+    flip_mv_y = flip_mv || EnvFlag("GOW3_KNACK_DLSS_FLIP_MV_Y");
+    const bool flip_jitter = EnvFlag("GOW3_KNACK_DLSS_FLIP_JITTER");
+    flip_jitter_x = flip_jitter || EnvFlag("GOW3_KNACK_DLSS_FLIP_JITTER_X");
+    flip_jitter_y = flip_jitter || EnvFlag("GOW3_KNACK_DLSS_FLIP_JITTER_Y");
+    if (const char* env = std::getenv("GOW3_KNACK_DLSS_DEBUG"); env && env[0]) {
+        debug_mode = env[0] == '2' ? 1u : env[0] == '1' ? 2u : 0u;
+    }
+    if (const char* env = std::getenv("GOW3_KNACK_DLSS_TEST"); env && env[0]) {
+        test = !std::strcmp(env, "nojitter")    ? Test::NoJitter
+               : !std::strcmp(env, "nomotion") ? Test::NoMotion
+               : !std::strcmp(env, "nodlss")   ? Test::NoDlss
+                                               : Test::None;
+    }
 }
 
 KnackDlss::~KnackDlss() {
@@ -145,8 +158,8 @@ std::array<float, 2> KnackDlss::DrawJitter(VideoCore::ImageId depth, u32 num_ind
                                            u32 num_instances) const {
     // Full-screen passes (a triangle, a quad) are not geometry. Every pass of the frame that uses
     // the scene depth until DLSS has run is shifted the same way; the post and the UI are not.
-    if (!frame_valid || done || !depth || (num_indices <= 6 && num_instances <= 1) ||
-        !IsSceneDepth(depth)) {
+    if (test == Test::NoJitter || !frame_valid || done || !depth ||
+        (num_indices <= 6 && num_instances <= 1) || !IsSceneDepth(depth)) {
         return {};
     }
     return jitter;
@@ -403,7 +416,11 @@ void KnackDlss::Run() {
 
     // 1. The game's velocities (NDC, previous - current) become DLSS motion vectors (pixels).
     {
-        const float scale[2] = {float(w) * 0.5f, (flip_motion_y ? 1.0f : -1.0f) * float(h) * 0.5f};
+        // The game's velocity is current - previous in NDC (y up); DLSS wants previous - current in
+        // pixels (y down): x is negated, y is not (the two flips cancel). See knack_dlss.comp.
+        const float scale[2] = {
+            test == Test::NoMotion ? 0.0f : (flip_mv_x ? 1.0f : -1.0f) * float(w) * 0.5f,
+            test == Test::NoMotion ? 0.0f : (flip_mv_y ? -1.0f : 1.0f) * float(h) * 0.5f};
         const vk::DescriptorImageInfo velocity_info{.imageView = velocity_view,
                                                     .imageLayout = vk::ImageLayout::eGeneral};
         const vk::DescriptorImageInfo motion_info{.imageView = *motion_view,
@@ -435,6 +452,15 @@ void KnackDlss::Run() {
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
                 vk::ImageLayout::eGeneral, all, vk::AccessFlagBits2::eShaderRead);
 
+    if (test == Test::NoDlss) {
+        // Only the jitter and the motion conversion: the image shows the jittered frame as it is.
+        ran_this_frame = true;
+        if (frames_run++ == 0) {
+            std::printf("KnackDlss: test mode nodlss, %ux%u (jitter on, DLSS not run)\n", w, h);
+        }
+        return;
+    }
+
     // 2. DLSS.
     const auto now = std::chrono::steady_clock::now();
     float frame_ms = std::chrono::duration<float, std::milli>(now - last_run).count();
@@ -458,7 +484,8 @@ void KnackDlss::Run() {
         reset = true;
     }
     if (ok) {
-        const float sign = flip_jitter ? -1.0f : 1.0f;
+        const float jitter_x = test == Test::NoJitter ? 0.0f : (flip_jitter_x ? -1.0f : 1.0f) * jitter[0];
+        const float jitter_y = test == Test::NoJitter ? 0.0f : (flip_jitter_y ? -1.0f : 1.0f) * jitter[1];
         ok = dlss->Evaluate(
             cmdbuf,
             {
@@ -470,8 +497,8 @@ void KnackDlss::Run() {
                            vk::ImageAspectFlagBits::eColor, w, h},
                 .output = {vk::Image(output_image), *output_view,
                            vk::Format::eR16G16B16A16Sfloat, vk::ImageAspectFlagBits::eColor, w, h},
-                .jitter_x = sign * jitter[0],
-                .jitter_y = sign * jitter[1],
+                .jitter_x = jitter_x,
+                .jitter_y = jitter_y,
                 .reset = reset,
                 .frame_ms = frame_ms,
                 .sharpness = 0.0f, // the menu's own sharpening (RCAS) stays in charge
@@ -493,7 +520,7 @@ void KnackDlss::Run() {
                     vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
     runtime.FlushBarriers();
     {
-        const u32 mode = debug_motion ? 1u : 0u;
+        const u32 mode = debug_mode;
         const vk::DescriptorImageInfo out_info{.imageView = *output_view,
                                                .imageLayout = vk::ImageLayout::eGeneral};
         const vk::DescriptorImageInfo scene_info{.imageView = color_view,
@@ -525,8 +552,11 @@ void KnackDlss::Run() {
     ran_this_frame = true;
     frames_without_run = 0;
     if (frames_run++ == 0) {
-        std::printf("KnackDlss: running, %ux%u, preset %d%s\n", w, h, preset,
-                    debug_motion ? " (motion vector debug view)" : "");
+        std::printf("KnackDlss: running, %ux%u, preset %d; motion x%s y%s, jitter x%s y%s%s%s\n", w, h,
+                    preset, flip_mv_x ? " flipped" : "", flip_mv_y ? " flipped" : "",
+                    flip_jitter_x ? " flipped" : "", flip_jitter_y ? " flipped" : "",
+                    debug_mode ? ", motion debug view" : "",
+                    test == Test::NoJitter ? ", TEST no jitter" : test == Test::NoMotion ? ", TEST no motion" : "");
     } else if (frames_run % 3600 == 0) {
         std::printf("KnackDlss: %u frames upscaled\n", frames_run);
     }

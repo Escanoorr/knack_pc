@@ -11,9 +11,11 @@ Found in frame captures and in the dumped G-buffer shaders of 1.10 (the same eng
 
 * The G-buffer pass has six colour targets and the scene depth (`D32S8`, normal depth: near 0, far 1).
   Colour target 5 is `R16G16F` and holds the game's velocity: every G-buffer pixel shader writes
-  `previous - current` clip position (x/w, y/w, NDC), clamped to the half-float range. The vertex shaders
-  compute the previous position with the previous view and the previous object transforms (skinning
-  included), so animated objects are in it.
+  `current - previous` clip position (x/w, y/w, NDC), clamped to the half-float range. In the pixel shader the
+  interpolated attribute at location 5 (the vertex shader output with the same inputs as `gl_Position`, so the
+  current position) is added and the one at location 6 (made from a second set of transforms: the previous
+  frame's) is subtracted. The vertex shaders use the previous view and the previous object transforms
+  (skinning included), so animated objects are in it.
 * The HDR scene colour is the `R16G16B16A16F` target drawn with that depth (sky, lighting, forward and
   transparent passes), full size.
 * The post-processing chain follows: its first compute dispatch is shader `526df215` (once per frame,
@@ -33,8 +35,10 @@ Found in frame captures and in the dumped G-buffer shaders of 1.10 (the same eng
   the jitter must be the same for both: the scene depth is known from the *previous* frame, and the first
   frame of a scene (or a new depth buffer) is left alone. The shift is a viewport shift, so the game's
   clip-space velocities stay jitter free.
-* **Motion** (`knack_dlss.comp`, `MOTION_PASS`): the velocity target becomes DLSS motion vectors,
-  render pixels, previous minus current, x right and y down: `v * (w/2, -h/2)`. Pixels at clear depth get 0.
+* **Motion** (`knack_dlss.comp`, `MOTION_PASS`): the velocity target becomes DLSS motion vectors. DLSS wants
+  render pixels, *previous minus current* (the programming guide: added to the pixel's position it gives where
+  the pixel was), x right, y down; the game has *current minus previous* in NDC with y up, so the scale is
+  `(-w/2, +h/2)`. Pixels at clear depth get 0.
 * **DLSS** runs in front of the dispatch whose shader hash is `GOW3_KNACK_DLSS_BEFORE_CS` (default
   `526df215`), through the same bridge as the other upscaler (`vk_dlss.*`, `gpu/dlss_bridge`), at scale 1.0 with
   HDR input and auto exposure. **Render preset**: `knack_dlss_preset` / menu (K = 11 default, J = 10, 0 = the
@@ -53,9 +57,13 @@ than 250 ms restarts the history).
 `knack_dlss_preset` (`GOW3_KNACK_DLSS_PRESET`: 0, 10 or 11). Environment only, for testing:
 
 * `GOW3_KNACK_DLSS_BEFORE_CS=<hex hash>`: another compute dispatch to run in front of.
-* `GOW3_KNACK_DLSS_FLIP_MV_Y=1`: motion y with the other sign.
-* `GOW3_KNACK_DLSS_FLIP_JITTER=1`: jitter handed to DLSS with the other sign.
-* `GOW3_KNACK_DLSS_DEBUG=1`: shows the motion vectors (red |x|, green |y|, 8 px = full) instead of the image.
+* `GOW3_KNACK_DLSS_FLIP_MV=1`, or `_FLIP_MV_X=1` / `_FLIP_MV_Y=1`: motion vectors with the other sign.
+* `GOW3_KNACK_DLSS_FLIP_JITTER=1`, or `_FLIP_JITTER_X=1` / `_FLIP_JITTER_Y=1`: the jitter handed to DLSS with the
+  other sign (the rendering itself is not changed).
+* `GOW3_KNACK_DLSS_DEBUG=1`: shows the motion vectors DLSS gets instead of the image, signed (grey = none, redder =
+  to the right, cyan = left, greener = down, magenta = up, 16 px = full); `=2` shows the magnitude.
+* `GOW3_KNACK_DLSS_TEST=nojitter|nomotion|nodlss`: no jitter at all, zero motion vectors, or the jitter and the motion
+  conversion without running DLSS (the image is the jittered frame as it is): tells which input is the problem.
 
 ## Log lines (`last_run.log`)
 
@@ -79,3 +87,10 @@ and a few lines in `vk_rasterizer.{h,cpp}` (include, member, construction, one c
 (the preset), `gow3_settings.{h,cpp}` (three fields, two keys), `gow3_overlay.cpp` (the Image tab section),
 `gpu/CMakeLists.txt` (two shader lines). `git diff` of the commit shows exactly those; the shader hashes are
 the game's, so they stay valid across versions of the port.
+
+## Diagnosing with NVIDIA's debug overlay
+
+The SDK's *dev* library (`lib/Windows_x86_64/dev/nvngx_dlss.dll`, kept in the runtime artifact under `dev-debug/`;
+it draws a watermark) has an on-screen overlay and hotkeys (DLSS Programming Guide, section 8): Ctrl+Alt+F12
+cycles the view (input colour, motion vectors, depth, jitter plot), Ctrl+Alt+F9 tries the jitter sign / axis
+configurations, Ctrl+Alt+F6 is the accumulation test for a still scene. Put it over `nvngx_dlss.dll` only for the test.

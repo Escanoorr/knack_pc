@@ -2,14 +2,18 @@
 // knack: helpers around DLSS for Knack (docs/knack-dlss.md).
 //
 // MOTION_PASS: the game's own velocity target (R16G16F, written by every G-buffer pixel shader as
-//   previous - current position in normalized device coordinates, so animated objects and the
-//   camera are both in it) becomes DLSS motion vectors: render pixels, previous minus current,
-//   x to the right, y down. `scale` is (width / 2, -height / 2); the sign of y comes from NDC y
-//   pointing up while the image's y points down. The sky (clear depth) has no velocity of its own.
+//   current - previous position in normalized device coordinates: x/w and y/w of the clip position
+//   that gl_Position also uses, minus the one made with the previous frame's matrices and object
+//   transforms; animated objects and the camera are both in it) becomes DLSS motion vectors:
+//   render pixels, PREVIOUS minus CURRENT ("added to the pixel's position it gives where it was in
+//   the last frame"), x to the right, y down. So `scale` is (-width / 2, +height / 2): the minus
+//   turns current - previous into previous - current, and NDC y points up while the image's y
+//   points down. The sky (clear depth) has no velocity of its own.
 //
 // MERGE_PASS: writes DLSS's colour back into the game's HDR scene colour, keeping the game's
-//   alpha (its post-processing reads data from it). Debug mode 1 shows the motion vectors given
-//   to DLSS (red/green: |x|/|y|, 8 render pixels = full) over a dimmed scene.
+//   alpha (its post-processing reads data from it). Debug modes show the motion vectors given to
+//   DLSS instead of the image: 1 magnitude (red |x|, green |y|, 8 render pixels = full); 2 signed
+//   (grey = none, redder = to the right, cyan = left, greener = down, magenta = up; 16 px = full).
 #version 450
 #extension GL_EXT_samplerless_texture_functions : require
 
@@ -65,6 +69,9 @@ void main() {
         const vec2 mv = texelFetch(motion_tex, pixel, 0).rg;
         const float luma = dot(min(color, vec3(1.0)), vec3(0.3, 0.6, 0.1));
         color = vec3(luma * 0.3) + vec3(clamp(abs(mv) / 8.0, 0.0, 1.0), 0.0);
+    } else if (mode == 2u) {
+        const vec2 mv = texelFetch(motion_tex, pixel, 0).rg;
+        color = vec3(clamp(vec2(0.5) + mv / 16.0, vec2(0.0), vec2(1.0)), 0.5);
     }
     imageStore(scene, pixel, vec4(color, original.a));
 }

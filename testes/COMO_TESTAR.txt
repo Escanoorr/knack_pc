@@ -1,0 +1,18 @@
+COMO TESTAR E ME MOSTRAR OS PROBLEMAS
+
+Copie os arquivos .bat da pasta "testes" para a pasta do Knack.exe. Cada um abre o launcher com um modo
+de teste. Clique em PLAY depois. Use SEMPRE o mesmo lugar do jogo (um trecho com o Knack e cenario).
+
+Para cada modo faca 3 prints (Windows+Shift+S, ou a tecla Print Screen):
+  A) parado, sem mexer em nada;
+  B) girando a camera devagar (print no meio do giro);
+  C) andando com o Knack (print no meio do movimento).
+Se o print nao mostrar bem, descreva em uma frase (ex.: "rastro atras do boneco", "tudo tremendo").
+
+ORDEM:
+  1) 1_DLSS_normal.bat. Se estiver bom, pare aqui e me conte.
+  2) Se estiver ruim: 2_DLSS_ver_movimento.bat (um print girando a camera para a direita e outro andando).
+  3) Depois, na ordem: 3, 4, 5, 6 e 7. Se cansar, mande so os prints do 1, 2 e 5.
+
+Sempre mande tambem o last_run.log (pasta de saves) depois do ultimo teste. As linhas "KnackDlss:" dizem
+qual modo estava ligado.

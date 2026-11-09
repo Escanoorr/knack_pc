@@ -87,10 +87,12 @@ private:
     Runtime& runtime;
 
     // Options read once (environment): see docs/knack-dlss.md.
+    enum class Test { None, NoJitter, NoMotion, NoDlss };
     u64 trigger_hash = 0x526df215;
-    bool flip_motion_y = false;
-    bool flip_jitter = false;
-    bool debug_motion = false;
+    bool flip_mv_x = false, flip_mv_y = false;          ///< motion vector signs, for finding a mistake
+    bool flip_jitter_x = false, flip_jitter_y = false;  ///< the signs of the jitter handed to DLSS
+    u32 debug_mode = 0;  ///< 0 off, 1 motion magnitude, 2 signed motion (see knack_dlss.comp)
+    Test test = Test::None;
     bool failed = false;
     bool printed_mismatch = false;
 
