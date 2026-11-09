@@ -34,17 +34,54 @@ jobs:
           }
       - name: Vulkan headers
         run: git clone --depth 1 --branch vulkan-sdk-1.4.357.0 https://github.com/KhronosGroup/Vulkan-Headers C:/vulkan-headers
+      # The runner's Visual Studio changes with its image (2022, then 2026), so none is named: the newest
+      # one with the C++ x64 tools is found, its compiler environment loaded, and NMake builds the DLL.
       - name: Build gow3_dlss.dll
         run: |
-          cmake -S gpu/dlss_bridge -B out/dlss-bridge -G "Visual Studio 17 2022" -A x64 `
-              -DDLSS_SDK_ROOT=C:/dlss-sdk -DVULKAN_INCLUDE=C:/vulkan-headers/include
-          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
-          cmake --build out/dlss-bridge --config Release
-          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'No Visual Studio with the C++ x64 tools was found on this runner' }
+          Write-Host "Visual Studio: $vs"
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found: $vcvars" }
+          # A small .bat keeps the quotes around the path out of PowerShell's argument passing.
+          $bat = Join-Path $env:RUNNER_TEMP 'msvc-env.bat'
+          Set-Content -Path $bat -Encoding ascii -Value "@echo off", "call `"$vcvars`" >nul", "set"
+          cmd /c $bat | ForEach-Object {
+              if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process') }
+          }
+          Write-Host ("cl.exe: " + (Get-Command cl -ErrorAction Stop).Source)
+          cmake --version | Select-Object -First 1
+          # NMake first (it needs no Visual Studio generator); the Visual Studio generators are the fallback.
+          $attempts = @(
+              @{ Generator = 'NMake Makefiles';       Configure = @('-DCMAKE_BUILD_TYPE=Release'); Build = @() },
+              @{ Generator = 'Visual Studio 18 2026'; Configure = @('-A', 'x64');                  Build = @('--config', 'Release') },
+              @{ Generator = 'Visual Studio 17 2022'; Configure = @('-A', 'x64');                  Build = @('--config', 'Release') }
+          )
+          $built = $false
+          foreach ($attempt in $attempts) {
+              Write-Host "::group::cmake, generator $($attempt.Generator)"
+              Remove-Item out/dlss-bridge -Recurse -Force -ErrorAction SilentlyContinue
+              $configure = $attempt.Configure
+              $build = $attempt.Build
+              cmake -S gpu/dlss_bridge -B out/dlss-bridge -G $attempt.Generator @configure `
+                  "-DDLSS_SDK_ROOT=C:/dlss-sdk" "-DVULKAN_INCLUDE=C:/vulkan-headers/include"
+              $ok = ($LASTEXITCODE -eq 0)
+              if ($ok) {
+                  cmake --build out/dlss-bridge @build
+                  $ok = ($LASTEXITCODE -eq 0)
+              }
+              Write-Host '::endgroup::'
+              if ($ok) { $built = $true; Write-Host "Built with $($attempt.Generator)"; break }
+              Write-Host "Generator $($attempt.Generator) failed; trying the next one"
+          }
+          if (-not $built) { throw 'The DLSS bridge could not be built with any generator' }
       - name: Gather
         run: |
           New-Item -ItemType Directory -Force dlss-runtime | Out-Null
-          Copy-Item out/dlss-bridge/Release/gow3_dlss.dll dlss-runtime/
+          $bridge = Get-ChildItem out/dlss-bridge -Recurse -Filter gow3_dlss.dll | Select-Object -First 1
+          if (-not $bridge) { throw 'gow3_dlss.dll was not built' }
+          Copy-Item $bridge.FullName dlss-runtime/
           Copy-Item C:/dlss-sdk/lib/Windows_x86_64/rel/nvngx_dlss.dll dlss-runtime/
           Copy-Item C:/dlss-sdk/LICENSE.txt dlss-runtime/NVIDIA-DLSS-LICENSE.txt
           @"
