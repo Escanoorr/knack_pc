@@ -12,6 +12,7 @@
 
 #include "gow3_settings.h"
 #include "video_core/host_shaders/knack_merge_comp.h"
+#include "video_core/host_shaders/knack_merge_ldr_comp.h"
 #include "video_core/host_shaders/knack_motion_comp.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -30,6 +31,9 @@ constexpr u32 JitterPhases = 8;
 /// The game's G-buffer pass has six colour targets; the sixth holds its velocities.
 constexpr u32 VelocityTarget = 5;
 
+/// A log line with the counters every this many frames of the 3D scene.
+constexpr u32 StatsFrames = 600;
+
 float Halton(u32 index, u32 base) {
     float f = 1.0f, result = 0.0f;
     for (u32 i = index; i > 0; i /= base) {
@@ -44,6 +48,12 @@ bool EnvFlag(const char* name) {
     return value && value[0] == '1';
 }
 
+/// True when the variable is set to 0.
+bool EnvFlag0(const char* name) {
+    const char* value = std::getenv(name);
+    return value && value[0] == '0';
+}
+
 } // namespace
 
 KnackDlss::KnackDlss(const Instance& instance_, Scheduler& scheduler_,
@@ -52,6 +62,12 @@ KnackDlss::KnackDlss(const Instance& instance_, Scheduler& scheduler_,
       runtime{runtime_} {
     // The compute dispatch that DLSS runs in front of: the first of the game's post-processing
     // chain, found by its shader hash in a frame capture (see docs/knack-dlss.md).
+    // Experimental: DLSS on the tone-mapped 8-bit image, in front of the game's SMAA (shader 5c718000),
+    // where exposure and the HDR range no longer matter.
+    ldr_mode = EnvFlag("GOW3_KNACK_DLSS_LDR");
+    if (ldr_mode) {
+        trigger_hash = 0x5c718000;
+    }
     if (const char* env = std::getenv("GOW3_KNACK_DLSS_BEFORE_CS"); env && env[0]) {
         trigger_hash = std::strtoull(env, nullptr, 16);
     }
@@ -63,12 +79,14 @@ KnackDlss::KnackDlss(const Instance& instance_, Scheduler& scheduler_,
     flip_jitter_x = flip_jitter || EnvFlag("GOW3_KNACK_DLSS_FLIP_JITTER_X");
     flip_jitter_y = flip_jitter || EnvFlag("GOW3_KNACK_DLSS_FLIP_JITTER_Y");
     if (const char* env = std::getenv("GOW3_KNACK_DLSS_DEBUG"); env && env[0]) {
-        debug_mode = env[0] == '2' ? 1u : env[0] == '1' ? 2u : 0u;
+        debug_mode = env[0] == '2' ? 1u : env[0] == '1' ? 2u : env[0] == '3' ? 3u : env[0] == '4' ? 4u : 0u;
     }
+    hdr_input = !EnvFlag0("GOW3_KNACK_DLSS_HDR");
     if (const char* env = std::getenv("GOW3_KNACK_DLSS_TEST"); env && env[0]) {
         test = !std::strcmp(env, "nojitter")    ? Test::NoJitter
                : !std::strcmp(env, "nomotion") ? Test::NoMotion
                : !std::strcmp(env, "nodlss")   ? Test::NoDlss
+               : !std::strcmp(env, "bigjitter") ? Test::BigJitter
                                                : Test::None;
     }
 }
@@ -131,6 +149,15 @@ void KnackDlss::NoteGBuffer(VideoCore::ImageId depth, VideoCore::ImageId velocit
 
 void KnackDlss::OnTargets(u32 mrt_mask, VideoCore::ImageId color0, VideoCore::ImageId color5,
                           VideoCore::ImageId depth) {
+    // The tone-mapped image: the last single-target full-size RGBA8 draw before the trigger (the
+    // tone mapping itself, then the objects drawn over it with the scene depth).
+    if (ldr_mode && gbuffer_seen && !done && (mrt_mask & 1u) && std::popcount(mrt_mask) == 1 && color0) {
+        const auto& color = texture_cache.GetImage(color0);
+        if (color.info.pixel_format == vk::Format::eR8G8B8A8Unorm &&
+            color.info.size.width == depth_width && color.info.size.height == depth_height) {
+            ldr_id = color0;
+        }
+    }
     if (!depth) {
         return;
     }
@@ -142,7 +169,7 @@ void KnackDlss::OnTargets(u32 mrt_mask, VideoCore::ImageId color0, VideoCore::Im
     }
     // The HDR scene colour: a full-size RGBA16F target drawn with the scene depth (sky, lighting,
     // forward and transparent passes). The last one before the post-processing is the one used.
-    if (gbuffer_seen && depth == depth_id && (mrt_mask & 1u) && color0 &&
+    if (!ldr_mode && gbuffer_seen && depth == depth_id && (mrt_mask & 1u) && color0 &&
         std::popcount(mrt_mask) <= 2) {
         const auto& color = texture_cache.GetImage(color0);
         const auto& scene_depth = texture_cache.GetImage(depth);
@@ -162,14 +189,17 @@ std::array<float, 2> KnackDlss::DrawJitter(VideoCore::ImageId depth, u32 num_ind
         (num_indices <= 6 && num_instances <= 1) || !IsSceneDepth(depth)) {
         return {};
     }
-    return jitter;
+    ++stats.jittered_draws;
+    // The big jitter test: 16 times the shift, to see by eye what is shifted and what is not.
+    return test == Test::BigJitter ? std::array<float, 2>{jitter[0] * 16.0f, jitter[1] * 16.0f}
+                                   : jitter;
 }
 
 void KnackDlss::OnDispatch(u64 cs_hash) {
     if (cs_hash != trigger_hash || done || !frame_valid || !gbuffer_seen) {
         return;
     }
-    if (!color_id || !depth_id || !velocity_id) {
+    if (!(ldr_mode ? ldr_id : color_id) || !depth_id || !velocity_id) {
         return;
     }
     Run();
@@ -177,7 +207,8 @@ void KnackDlss::OnDispatch(u64 cs_hash) {
 
 void KnackDlss::OnDisplayPass() {
     if (!gbuffer_seen && !done) {
-        return; // HUD draws go to the display buffer too: only the first one ends the frame
+        ++stats.boundaries_ignored; // HUD draws go to the display buffer too: only the first one ends the frame
+        return;
     }
     if (gbuffer_seen && !ran_this_frame && !failed) {
         if (++frames_without_run == 180 && frames_run == 0) {
@@ -190,6 +221,18 @@ void KnackDlss::OnDisplayPass() {
         jitter_index = jitter_index % JitterPhases + 1;
         jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
     }
+    if (gbuffer_seen && ++stats.frames >= StatsFrames) {
+        std::printf("KnackDlss: last %u frames of the 3D scene: DLSS ran in %u, history restarted %u times, "
+                    "%u frames skipped it, %.1f jittered draws per frame, %u extra display-buffer draws "
+                    "ignored; jitter now %+.3f %+.3f\n",
+                    stats.frames, stats.runs, stats.resets, stats.bail_outs,
+                    double(stats.jittered_draws) / double(stats.frames), stats.boundaries_ignored,
+                    double(jitter[0]), double(jitter[1]));
+        stats = {};
+    }
+    if (gbuffer_seen && !ran_this_frame) {
+        ++stats.bail_outs;
+    }
     ran_last_frame = ran_this_frame;
     if (!ran_this_frame) {
         reset_history = true; // a frame without DLSS leaves the history behind
@@ -201,6 +244,7 @@ void KnackDlss::OnDisplayPass() {
     depth_id = {};
     velocity_id = {};
     color_id = {};
+    ldr_id = {};
     if (!failed) {
         SetState(ran_last_frame ? 2 : 1);
     }
@@ -290,6 +334,16 @@ bool KnackDlss::EnsureResources(u32 w, u32 h) {
              motion_pipeline, vk::DescriptorType::eStorageImage);
         make(KNACK_MERGE_COMP, sizeof(u32), merge_desc_layout, merge_pipeline_layout,
              merge_pipeline, vk::DescriptorType::eStorageImage);
+        // The same pass for the tone-mapped RGBA8 image (only the storage format differs).
+        const auto ldr_module = CompileSPV(KNACK_MERGE_LDR_COMP, device);
+        merge_ldr_pipeline = Check(device.createComputePipelineUnique(
+            {}, vk::ComputePipelineCreateInfo{
+                    .stage = {.stage = vk::ShaderStageFlagBits::eCompute,
+                              .module = ldr_module,
+                              .pName = "main"},
+                    .layout = *merge_pipeline_layout,
+                }));
+        device.destroyShaderModule(ldr_module);
     }
     if (motion_image && w == width && h == height) {
         return true;
@@ -345,7 +399,9 @@ bool KnackDlss::EnsureResources(u32 w, u32 h) {
 
 void KnackDlss::Run() {
     done = true; // whatever happens below, once per frame, and the jitter stops here
-    auto& color = texture_cache.GetImage(color_id);
+    // The image DLSS works on: the HDR scene colour, or (experimental) the tone-mapped RGBA8 one.
+    const vk::Format scene_format = ldr_mode ? vk::Format::eR8G8B8A8Unorm : vk::Format::eR16G16B16A16Sfloat;
+    auto& color = texture_cache.GetImage(ldr_mode ? ldr_id : color_id);
     auto& depth = texture_cache.GetImage(depth_id);
     auto& velocity = texture_cache.GetImage(velocity_id);
     const u32 w = color.info.size.width;
@@ -353,7 +409,7 @@ void KnackDlss::Run() {
     const auto sized = [&](const VideoCore::Image& image) {
         return image.info.size.width == w && image.info.size.height == h;
     };
-    if (color.info.pixel_format != vk::Format::eR16G16B16A16Sfloat || !sized(depth) ||
+    if (color.info.pixel_format != scene_format || !sized(depth) ||
         !sized(velocity) || !(color.usage_flags & vk::ImageUsageFlagBits::eStorage) ||
         !(velocity.usage_flags & vk::ImageUsageFlagBits::eSampled)) {
         if (!printed_mismatch) {
@@ -374,8 +430,7 @@ void KnackDlss::Run() {
         return;
     }
     const auto depth_view = CachedView(depth, depth.info.pixel_format, vk::ImageAspectFlagBits::eDepth);
-    const auto color_view =
-        CachedView(color, vk::Format::eR16G16B16A16Sfloat, vk::ImageAspectFlagBits::eColor);
+    const auto color_view = CachedView(color, scene_format, vk::ImageAspectFlagBits::eColor);
     const auto velocity_view =
         CachedView(velocity, vk::Format::eR16G16Sfloat, vk::ImageAspectFlagBits::eColor);
 
@@ -452,11 +507,12 @@ void KnackDlss::Run() {
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
                 vk::ImageLayout::eGeneral, all, vk::AccessFlagBits2::eShaderRead);
 
-    if (test == Test::NoDlss) {
+    if (test == Test::NoDlss || test == Test::BigJitter) {
         // Only the jitter and the motion conversion: the image shows the jittered frame as it is.
         ran_this_frame = true;
         if (frames_run++ == 0) {
-            std::printf("KnackDlss: test mode nodlss, %ux%u (jitter on, DLSS not run)\n", w, h);
+            std::printf("KnackDlss: test mode %s, %ux%u (jitter on, DLSS not run)\n",
+                        test == Test::BigJitter ? "bigjitter (16x jitter)" : "nodlss", w, h);
         }
         return;
     }
@@ -473,7 +529,7 @@ void KnackDlss::Run() {
 
     Dlss* dlss = Dlss::Get();
     const int preset = Gow3Settings::Get().knack_dlss_preset.load();
-    const Dlss::FeatureDesc desc{w, h, w, h, Dlss::QualityForScale(1.0f), true, preset};
+    const Dlss::FeatureDesc desc{w, h, w, h, Dlss::QualityForScale(1.0f), hdr_input && !ldr_mode, preset};
     bool reset = reset_history || !ran_last_frame || gap;
     bool ok = true;
     if (!dlss->HasFeature(desc)) {
@@ -541,7 +597,7 @@ void KnackDlss::Run() {
              .descriptorType = vk::DescriptorType::eSampledImage,
              .pImageInfo = &motion_info},
         }};
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *merge_pipeline);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, ldr_mode ? *merge_ldr_pipeline : *merge_pipeline);
         cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *merge_pipeline_layout, 0,
                                     writes);
         cmdbuf.pushConstants(*merge_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
@@ -551,12 +607,22 @@ void KnackDlss::Run() {
     reset_history = false;
     ran_this_frame = true;
     frames_without_run = 0;
+    ++stats.runs;
+    if (reset) {
+        ++stats.resets;
+    }
     if (frames_run++ == 0) {
         std::printf("KnackDlss: running, %ux%u, preset %d; motion x%s y%s, jitter x%s y%s%s%s\n", w, h,
                     preset, flip_mv_x ? " flipped" : "", flip_mv_y ? " flipped" : "",
                     flip_jitter_x ? " flipped" : "", flip_jitter_y ? " flipped" : "",
-                    debug_mode ? ", motion debug view" : "",
+                    debug_mode ? ", debug view" : "",
                     test == Test::NoJitter ? ", TEST no jitter" : test == Test::NoMotion ? ", TEST no motion" : "");
+        std::printf("KnackDlss: mode %s, in front of compute %08llx\n",
+                    ldr_mode ? "LDR (tone-mapped image, GOW3_KNACK_DLSS_LDR=1)" : "HDR (scene colour)",
+                    static_cast<unsigned long long>(trigger_hash));
+        if (!hdr_input && !ldr_mode) {
+            std::printf("KnackDlss: DLSS told the colour is NOT HDR (GOW3_KNACK_DLSS_HDR=0)\n");
+        }
     } else if (frames_run % 3600 == 0) {
         std::printf("KnackDlss: %u frames upscaled\n", frames_run);
     }

@@ -62,13 +62,22 @@ than 250 ms restarts the history).
   other sign (the rendering itself is not changed).
 * `GOW3_KNACK_DLSS_DEBUG=1`: shows the motion vectors DLSS gets instead of the image, signed (grey = none, redder =
   to the right, cyan = left, greener = down, magenta = up, 16 px = full); `=2` shows the magnitude.
+* `GOW3_KNACK_DLSS_DEBUG=3` split screen (DLSS on the left half, the game's own frame on the right, a bright line
+  between) and `=4` the difference |DLSS - game| (brighter = DLSS changed more): both show the effect of DLSS inside one image.
+* `GOW3_KNACK_DLSS_LDR=1` (experimental): DLSS on the tone-mapped 8-bit image in front of the game's SMAA (compute
+  `5c718000`, seen once per frame in every capture) instead of on the HDR scene colour: no exposure, no HDR range.
+* `GOW3_KNACK_DLSS_HDR=0`: DLSS told the HDR scene colour is not HDR (to see whether the colours change).
+* `GOW3_KNACK_DLSS_TEST=bigjitter`: no DLSS, jitter 16 times larger: everything that is drawn with the scene depth must
+  shake together; whatever does not shake with the rest is not being jittered.
 * `GOW3_KNACK_DLSS_TEST=nojitter|nomotion|nodlss`: no jitter at all, zero motion vectors, or the jitter and the motion
   conversion without running DLSS (the image is the jittered frame as it is): tells which input is the problem.
 
 ## Log lines (`last_run.log`)
 
 `DLSS: ready` (the bridge and NVIDIA's DLL were found; `DLSS ... preset 11` follows when the feature is made),
-`KnackDlss: scene found, WxH`, `KnackDlss: running, WxH, preset N`, `KnackDlss: the 3D scene is drawn but
+`KnackDlss: scene found, WxH`, `KnackDlss: running, WxH, preset N; motion ..., jitter ...`, `KnackDlss: mode ...`,
+`KnackDlss: last 600 frames of the 3D scene: DLSS ran in N, history restarted N times, ...` (counters: how often
+DLSS ran, how often its history was reset, jittered draws per frame, display-buffer draws ignored), `KnackDlss: the 3D scene is drawn but
 the compute dispatch ... never came`, `KnackDlss: the scene images do not fit: ...`, `KnackDlss: DLSS failed`.
 The menu shows the same as "DLSS status".
 

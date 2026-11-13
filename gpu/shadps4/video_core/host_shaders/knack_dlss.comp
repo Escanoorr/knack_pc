@@ -14,6 +14,8 @@
 //   alpha (its post-processing reads data from it). Debug modes show the motion vectors given to
 //   DLSS instead of the image: 1 magnitude (red |x|, green |y|, 8 render pixels = full); 2 signed
 //   (grey = none, redder = to the right, cyan = left, greener = down, magenta = up; 16 px = full).
+//   3 split screen: DLSS on the left half, the game's own frame on the right (a bright line between);
+//   4 difference: how much DLSS changed the frame, |DLSS - game| (brighter = more).
 #version 450
 #extension GL_EXT_samplerless_texture_functions : require
 
@@ -46,8 +48,12 @@ void main() {
 
 #ifdef MERGE_PASS
 
+#ifndef SCENE_FORMAT
+#define SCENE_FORMAT rgba16f  // the HDR scene colour; rgba8 for the tone-mapped (LDR) image
+#endif
+
 layout(binding = 0) uniform texture2D dlss_tex;
-layout(binding = 1, rgba16f) uniform image2D scene;
+layout(binding = 1, SCENE_FORMAT) uniform image2D scene;
 layout(binding = 2) uniform texture2D motion_tex;
 
 layout(push_constant) uniform Params {
@@ -72,6 +78,16 @@ void main() {
     } else if (mode == 2u) {
         const vec2 mv = texelFetch(motion_tex, pixel, 0).rg;
         color = vec3(clamp(vec2(0.5) + mv / 16.0, vec2(0.0), vec2(1.0)), 0.5);
+    } else if (mode == 3u) {
+        const int half_width = imageSize(scene).x / 2;
+        if (pixel.x >= half_width) {
+            color = original.rgb;
+        }
+        if (abs(pixel.x - half_width) <= 1) {
+            color = vec3(8.0);
+        }
+    } else if (mode == 4u) {
+        color = vec3(length(abs(color - original.rgb)) * 6.0);
     }
     imageStore(scene, pixel, vec4(color, original.a));
 }

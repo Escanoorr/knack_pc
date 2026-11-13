@@ -87,11 +87,13 @@ private:
     Runtime& runtime;
 
     // Options read once (environment): see docs/knack-dlss.md.
-    enum class Test { None, NoJitter, NoMotion, NoDlss };
+    enum class Test { None, NoJitter, NoMotion, NoDlss, BigJitter };
     u64 trigger_hash = 0x526df215;
     bool flip_mv_x = false, flip_mv_y = false;          ///< motion vector signs, for finding a mistake
     bool flip_jitter_x = false, flip_jitter_y = false;  ///< the signs of the jitter handed to DLSS
-    u32 debug_mode = 0;  ///< 0 off, 1 motion magnitude, 2 signed motion (see knack_dlss.comp)
+    u32 debug_mode = 0;  ///< 0 off, 1..4 see knack_dlss.comp (motion, split screen, difference)
+    bool hdr_input = true;  ///< DLSS told the scene colour is linear HDR
+    bool ldr_mode = false;  ///< run on the tone-mapped 8-bit image before the game's SMAA, not on the HDR
     Test test = Test::None;
     bool failed = false;
     bool printed_mismatch = false;
@@ -100,7 +102,7 @@ private:
     VAddr depth_address = 0;
     u32 depth_width = 0, depth_height = 0;
     // This frame, from the draws seen so far.
-    VideoCore::ImageId depth_id{}, velocity_id{}, color_id{};
+    VideoCore::ImageId depth_id{}, velocity_id{}, color_id{}, ldr_id{};
     bool gbuffer_seen = false;
     bool frame_valid = false;  ///< the scene depth was known from the start of the frame
     bool done = false;         ///< DLSS ran (or was given up on) this frame: no more jitter
@@ -111,6 +113,12 @@ private:
     std::array<float, 2> jitter{};
     u32 frames_run = 0;
     u32 frames_without_run = 0;
+    // Counters for the log line every StatsFrames frames (what really happened, for finding mistakes).
+    struct Stats {
+        u32 frames = 0, boundaries_ignored = 0, runs = 0, resets = 0, bail_outs = 0;
+        u64 jittered_draws = 0;
+    };
+    mutable Stats stats;
     std::chrono::steady_clock::time_point last_run{};
 
     // Own resources: motion vectors in pixels, DLSS output, two compute pipelines.
@@ -121,7 +129,7 @@ private:
     vk::UniqueImageView output_view;
     vk::UniqueDescriptorSetLayout motion_desc_layout, merge_desc_layout;
     vk::UniquePipelineLayout motion_pipeline_layout, merge_pipeline_layout;
-    vk::UniquePipeline motion_pipeline, merge_pipeline;
+    vk::UniquePipeline motion_pipeline, merge_pipeline, merge_ldr_pipeline;
     std::array<ViewEntry, 8> view_cache{};
     u64 view_uses = 0;
 };
