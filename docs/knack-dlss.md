@@ -25,13 +25,15 @@ Found in frame captures and in the dumped G-buffer shaders of 1.10 (the same eng
 ## What runs
 
 * **Detection** (`OnTargets`, per draw): six or more colour targets with the sixth `R16G16F` and a depth is
-  the G-buffer pass (scene depth and velocity); a draw into a full-size `RGBA16F` target with that depth is the
-  scene colour. The scene depth is remembered between frames by guest address and size (image ids can be
-  reused); everything else is per frame.
+  the G-buffer pass (scene depth and velocity). The tone-mapped image (the default) is the last single-target
+  full-size `RGBA8` draw before the trigger (the tone mapping, then the objects drawn over it with the scene depth);
+  in the experimental HDR mode it is the full-size `RGBA16F` target drawn with the scene depth instead. The scene depth
+  is remembered between frames by guest address and size (image ids can be reused); everything else is per frame.
 * **Jitter** (`DrawJitter`): a sub-pixel viewport shift (Halton 2,3, 8 phases) on every geometry draw
   (more than 6 indices or instanced) that uses the scene depth, from the Z pre-pass on, until DLSS has run:
-  Z pre-pass, G-buffer, decals, sky, forward and transparent passes. Shadow maps, half-size depth, full-screen
-  composites, post-processing and the UI are not shifted. The pre-pass and the G-buffer share the depth, so
+  Z pre-pass, G-buffer, decals, sky, forward and transparent passes (and, on the tone-mapped image, the objects drawn
+  over it with the scene depth). Shadow maps, half-size depth, full-screen composites, the rest of the
+  post-processing and the UI are not shifted. The pre-pass and the G-buffer share the depth, so
   the jitter must be the same for both: the scene depth is known from the *previous* frame, and the first
   frame of a scene (or a new depth buffer) is left alone. The shift is a viewport shift, so the game's
   clip-space velocities stay jitter free.
@@ -39,15 +41,17 @@ Found in frame captures and in the dumped G-buffer shaders of 1.10 (the same eng
   render pixels, *previous minus current* (the programming guide: added to the pixel's position it gives where
   the pixel was), x right, y down; the game has *current minus previous* in NDC with y up, so the scale is
   `(-w/2, +h/2)`. Pixels at clear depth get 0.
-* **DLSS** runs in front of the dispatch whose shader hash is `GOW3_KNACK_DLSS_BEFORE_CS` (default
-  `526df215`), through the same bridge as the other upscaler (`vk_dlss.*`, `gpu/dlss_bridge`), at scale 1.0 with
-  HDR input and auto exposure. **Render preset**: `knack_dlss_preset` / menu (K = 11 default, J = 10, 0 = the
+* **DLSS** runs in front of the dispatch whose shader hash is `GOW3_KNACK_DLSS_BEFORE_CS` (default `5c718000`,
+  the game's SMAA, on the tone-mapped image; `526df215` with `GOW3_KNACK_DLSS_LDR=0`), through the same bridge as the other upscaler (`vk_dlss.*`, `gpu/dlss_bridge`), at scale 1.0 (DLAA); the HDR
+  mode tells DLSS the input is linear HDR and leaves the exposure to its automatic mode. **Render preset**: `knack_dlss_preset` / menu (K = 11 default, J = 10, 0 = the
   driver's default), passed on to NGX for every quality mode.
-* **Merge** (`MERGE_PASS`): DLSS's colour replaces the RGB of the scene colour, its alpha stays; the game's
-  post-processing, SMAA and UI then follow as always.
+* **Merge** (`MERGE_PASS`): DLSS's colour replaces the RGB of the image it ran on (RGBA8, or RGBA16F in the HDR mode),
+  its alpha stays; the game's SMAA and UI (and, in the HDR mode, the whole post-processing) then follow as always.
 
-Known limits of this first stage: bloom and the half-size effects that read the scene colour before the
-trigger see the aliased image; sky and particles have no velocity of their own (the sky is zero), so
+Known limits of this first stage: DLSS gives a cleaner image, not a faster one (it costs about 3 ms at 2560x1080 on an
+RTX 2060 Super; a faster frame needs a lower internal resolution, which is not done); bloom, depth of field and the
+half-size effects are made before DLSS and see the aliased image; objects drawn after the tone mapping have no
+velocity of their own; sky and particles have no velocity of their own (the sky is zero), so
 fast camera turns can leave a trace on them; there is no reactive mask; no scene-cut detection (a gap of more
 than 250 ms restarts the history).
 
@@ -64,8 +68,11 @@ than 250 ms restarts the history).
   to the right, cyan = left, greener = down, magenta = up, 16 px = full); `=2` shows the magnitude.
 * `GOW3_KNACK_DLSS_DEBUG=3` split screen (DLSS on the left half, the game's own frame on the right, a bright line
   between) and `=4` the difference |DLSS - game| (brighter = DLSS changed more): both show the effect of DLSS inside one image.
-* `GOW3_KNACK_DLSS_LDR=1` (experimental): DLSS on the tone-mapped 8-bit image in front of the game's SMAA (compute
-  `5c718000`, seen once per frame in every capture) instead of on the HDR scene colour: no exposure, no HDR range.
+* `GOW3_KNACK_DLSS_LDR=0` (experimental): DLSS on the HDR scene colour in front of the post-processing (compute
+  `526df215`) instead of on the tone-mapped 8-bit image in front of the game's SMAA (compute `5c718000`, seen once
+  per frame in every capture), which is the default. Tested on an RTX 2060 Super: the HDR mode turns bright emissive
+  parts saturated green (only in the DLSS half of a split-screen print: thousands of pixels against a handful) and puts
+  colour fringes on edges; the tone-mapped image has neither.
 * `GOW3_KNACK_DLSS_HDR=0`: DLSS told the HDR scene colour is not HDR (to see whether the colours change).
 * `GOW3_KNACK_DLSS_TEST=bigjitter`: no DLSS, jitter 16 times larger: everything that is drawn with the scene depth must
   shake together; whatever does not shake with the rest is not being jittered.

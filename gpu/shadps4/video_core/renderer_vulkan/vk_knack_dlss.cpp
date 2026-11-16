@@ -62,12 +62,12 @@ KnackDlss::KnackDlss(const Instance& instance_, Scheduler& scheduler_,
       runtime{runtime_} {
     // The compute dispatch that DLSS runs in front of: the first of the game's post-processing
     // chain, found by its shader hash in a frame capture (see docs/knack-dlss.md).
-    // Experimental: DLSS on the tone-mapped 8-bit image, in front of the game's SMAA (shader 5c718000),
-    // where exposure and the HDR range no longer matter.
-    ldr_mode = EnvFlag("GOW3_KNACK_DLSS_LDR");
-    if (ldr_mode) {
-        trigger_hash = 0x5c718000;
-    }
+    // The default: DLSS on the tone-mapped 8-bit image, in front of the game's SMAA (shader 5c718000),
+    // where exposure and the HDR range no longer matter. On the HDR scene colour DLSS turned bright
+    // emissive parts saturated green and put colour fringes on edges (see docs/knack-dlss.md), so the
+    // HDR mode (GOW3_KNACK_DLSS_LDR=0, trigger 526df215) stays only as an experiment.
+    ldr_mode = !EnvFlag0("GOW3_KNACK_DLSS_LDR");
+    trigger_hash = ldr_mode ? 0x5c718000 : 0x526df215;
     if (const char* env = std::getenv("GOW3_KNACK_DLSS_BEFORE_CS"); env && env[0]) {
         trigger_hash = std::strtoull(env, nullptr, 16);
     }
@@ -618,7 +618,7 @@ void KnackDlss::Run() {
                     debug_mode ? ", debug view" : "",
                     test == Test::NoJitter ? ", TEST no jitter" : test == Test::NoMotion ? ", TEST no motion" : "");
         std::printf("KnackDlss: mode %s, in front of compute %08llx\n",
-                    ldr_mode ? "LDR (tone-mapped image, GOW3_KNACK_DLSS_LDR=1)" : "HDR (scene colour)",
+                    ldr_mode ? "LDR (tone-mapped image, the default)" : "HDR (scene colour, GOW3_KNACK_DLSS_LDR=0)",
                     static_cast<unsigned long long>(trigger_hash));
         if (!hdr_input && !ldr_mode) {
             std::printf("KnackDlss: DLSS told the colour is NOT HDR (GOW3_KNACK_DLSS_HDR=0)\n");

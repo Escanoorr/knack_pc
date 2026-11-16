@@ -11,10 +11,11 @@
 //  * Jitter is a sub-pixel viewport shift on every geometry draw that uses the scene depth: the
 //    Z pre-pass, the G-buffer and the forward passes, so depth tests that compare against the
 //    pre-pass keep matching and the game's clip-space velocities stay jitter free.
-//  * Just before the game's first post-processing compute dispatch of the frame (a shader hash,
-//    GOW3_KNACK_DLSS_BEFORE_CS) DLSS reads colour, depth and the converted motion vectors and its
-//    result replaces the scene colour, so bloom, tone mapping, the game's SMAA and the UI follow
-//    as usual.
+//  * Just before the game's SMAA, on the tone-mapped 8-bit image (compute shader 5c718000, once per
+//    frame in every capture), DLSS reads that image, the depth and the converted motion vectors and its
+//    result replaces the image, so the game's SMAA and the UI follow as usual. (Run on the HDR scene
+//    colour in front of the post-processing, DLSS made bright emissive parts saturated green and put
+//    colour fringes on edges: that mode is only an experiment, GOW3_KNACK_DLSS_LDR=0.)
 //
 // Everything is switched on from the menu (Image tab) or GOW3_KNACK_DLSS=1; with the setting off,
 // or without gow3_dlss.dll and nvngx_dlss.dll, nothing here runs.
@@ -93,7 +94,7 @@ private:
     bool flip_jitter_x = false, flip_jitter_y = false;  ///< the signs of the jitter handed to DLSS
     u32 debug_mode = 0;  ///< 0 off, 1..4 see knack_dlss.comp (motion, split screen, difference)
     bool hdr_input = true;  ///< DLSS told the scene colour is linear HDR
-    bool ldr_mode = false;  ///< run on the tone-mapped 8-bit image before the game's SMAA, not on the HDR
+    bool ldr_mode = true;  ///< run on the tone-mapped 8-bit image before the game's SMAA (the default), not on the HDR
     Test test = Test::None;
     bool failed = false;
     bool printed_mismatch = false;
