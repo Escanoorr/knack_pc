@@ -82,6 +82,10 @@ KnackDlss::KnackDlss(const Instance& instance_, Scheduler& scheduler_,
         debug_mode = env[0] == '2' ? 1u : env[0] == '1' ? 2u : env[0] == '3' ? 3u : env[0] == '4' ? 4u : 0u;
     }
     hdr_input = !EnvFlag0("GOW3_KNACK_DLSS_HDR");
+    swap_jitter = EnvFlag("GOW3_KNACK_DLSS_SWAP_JITTER");
+    if (const char* env = std::getenv("GOW3_KNACK_DLSS_MIP_BIAS"); env && env[0]) {
+        mip_bias = static_cast<float>(std::atof(env));
+    }
     if (const char* env = std::getenv("GOW3_KNACK_DLSS_TEST"); env && env[0]) {
         test = !std::strcmp(env, "nojitter")    ? Test::NoJitter
                : !std::strcmp(env, "nomotion") ? Test::NoMotion
@@ -193,6 +197,13 @@ std::array<float, 2> KnackDlss::DrawJitter(VideoCore::ImageId depth, u32 num_ind
     // The big jitter test: 16 times the shift, to see by eye what is shifted and what is not.
     return test == Test::BigJitter ? std::array<float, 2>{jitter[0] * 16.0f, jitter[1] * 16.0f}
                                    : jitter;
+}
+
+float KnackDlss::SceneMipBias(VideoCore::ImageId depth) const {
+    if (mip_bias == 0.0f || !frame_valid || done || !depth || !IsSceneDepth(depth)) {
+        return 0.0f;
+    }
+    return mip_bias;
 }
 
 void KnackDlss::OnDispatch(u64 cs_hash) {
@@ -540,8 +551,11 @@ void KnackDlss::Run() {
         reset = true;
     }
     if (ok) {
-        const float jitter_x = test == Test::NoJitter ? 0.0f : (flip_jitter_x ? -1.0f : 1.0f) * jitter[0];
-        const float jitter_y = test == Test::NoJitter ? 0.0f : (flip_jitter_y ? -1.0f : 1.0f) * jitter[1];
+        float jitter_x = test == Test::NoJitter ? 0.0f : (flip_jitter_x ? -1.0f : 1.0f) * jitter[0];
+        float jitter_y = test == Test::NoJitter ? 0.0f : (flip_jitter_y ? -1.0f : 1.0f) * jitter[1];
+        if (swap_jitter) {
+            std::swap(jitter_x, jitter_y);
+        }
         ok = dlss->Evaluate(
             cmdbuf,
             {
@@ -617,6 +631,8 @@ void KnackDlss::Run() {
                     flip_jitter_x ? " flipped" : "", flip_jitter_y ? " flipped" : "",
                     debug_mode ? ", debug view" : "",
                     test == Test::NoJitter ? ", TEST no jitter" : test == Test::NoMotion ? ", TEST no motion" : "");
+        std::printf("KnackDlss: texture LOD bias %+.2f on scene draws, jitter x/y %s\n", double(mip_bias),
+                    swap_jitter ? "exchanged" : "not exchanged");
         std::printf("KnackDlss: mode %s, in front of compute %08llx\n",
                     ldr_mode ? "LDR (tone-mapped image, the default)" : "HDR (scene colour, GOW3_KNACK_DLSS_LDR=0)",
                     static_cast<unsigned long long>(trigger_hash));

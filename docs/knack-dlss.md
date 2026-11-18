@@ -48,6 +48,11 @@ Found in frame captures and in the dumped G-buffer shaders of 1.10 (the same eng
 * **Merge** (`MERGE_PASS`): DLSS's colour replaces the RGB of the image it ran on (RGBA8, or RGBA16F in the HDR mode),
   its alpha stays; the game's SMAA and UI (and, in the HDR mode, the whole post-processing) then follow as always.
 
+Sharpness: measured on aligned, same-content background regions of an RTX 2060 Super (static camera), the first
+tone-mapped-image version was 21-23% *softer* than the game without DLSS (Laplacian variance 0.77-0.79 of it). The guide
+names two usual causes of that, the jitter handed to DLSS with a wrong sign or axis and the missing negative texture LOD
+bias; both are switchable (`GOW3_KNACK_DLSS_FLIP_JITTER[_X|_Y]`, `_SWAP_JITTER`, `_MIP_BIAS`) to be measured one by one.
+
 Known limits of this first stage: DLSS gives a cleaner image, not a faster one (it costs about 3 ms at 2560x1080 on an
 RTX 2060 Super; a faster frame needs a lower internal resolution, which is not done); bloom, depth of field and the
 half-size effects are made before DLSS and see the aliased image; objects drawn after the tone mapping have no
@@ -64,6 +69,10 @@ than 250 ms restarts the history).
 * `GOW3_KNACK_DLSS_FLIP_MV=1`, or `_FLIP_MV_X=1` / `_FLIP_MV_Y=1`: motion vectors with the other sign.
 * `GOW3_KNACK_DLSS_FLIP_JITTER=1`, or `_FLIP_JITTER_X=1` / `_FLIP_JITTER_Y=1`: the jitter handed to DLSS with the
   other sign (the rendering itself is not changed).
+* `GOW3_KNACK_DLSS_MIP_BIAS=<float>`: the texture LOD bias for scene draws (default -1.0, the DLSS guide's
+  log2(render / display) - 1 for DLAA; 0 turns it off). Given to every draw that uses the scene depth, the Z
+  pre-pass too, so alpha-tested edges agree (`Rasterizer::BindResources` asks `KnackDlss::SceneMipBias`).
+* `GOW3_KNACK_DLSS_SWAP_JITTER=1`: jitter x and y exchanged when handed to DLSS.
 * `GOW3_KNACK_DLSS_DEBUG=1`: shows the motion vectors DLSS gets instead of the image, signed (grey = none, redder =
   to the right, cyan = left, greener = down, magenta = up, 16 px = full); `=2` shows the magnitude.
 * `GOW3_KNACK_DLSS_DEBUG=3` split screen (DLSS on the left half, the game's own frame on the right, a bright line

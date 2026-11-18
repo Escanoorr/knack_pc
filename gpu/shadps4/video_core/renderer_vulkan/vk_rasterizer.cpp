@@ -1809,6 +1809,10 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
             std::printf("Upscaler: scene texture LOD bias %.2f\n", sampler_lod_bias);
         }
     }
+    // knack: the same for DLSS on every scene draw (see KnackDlss::SceneMipBias).
+    if (sampler_lod_bias == 0.0f && !pipeline->IsCompute() && knack_dlss->Enabled()) {
+        sampler_lod_bias = knack_dlss->SceneMipBias(db_desc.first);
+    }
 
     bool uses_dma = false;
 

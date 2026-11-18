@@ -58,6 +58,11 @@ public:
     [[nodiscard]] std::array<float, 2> DrawJitter(VideoCore::ImageId depth, u32 num_indices,
                                                   u32 num_instances) const;
 
+    /// Extra LOD bias for the samplers of a scene draw (the DLSS guide: log2(render / display) - 1, that
+    /// is -1 for DLAA), so textures keep the detail DLSS can resolve; zero for everything else. It is given
+    /// to every draw that uses the scene depth, the Z pre-pass too, so alpha-tested edges agree.
+    [[nodiscard]] float SceneMipBias(VideoCore::ImageId depth) const;
+
     /// Before every compute dispatch: DLSS runs ahead of the game's post-processing.
     void OnDispatch(u64 cs_hash);
 
@@ -92,6 +97,8 @@ private:
     u64 trigger_hash = 0x526df215;
     bool flip_mv_x = false, flip_mv_y = false;          ///< motion vector signs, for finding a mistake
     bool flip_jitter_x = false, flip_jitter_y = false;  ///< the signs of the jitter handed to DLSS
+    bool swap_jitter = false;                           ///< jitter x and y exchanged when handed to DLSS
+    float mip_bias = -1.0f;                             ///< see SceneMipBias
     u32 debug_mode = 0;  ///< 0 off, 1..4 see knack_dlss.comp (motion, split screen, difference)
     bool hdr_input = true;  ///< DLSS told the scene colour is linear HDR
     bool ldr_mode = true;  ///< run on the tone-mapped 8-bit image before the game's SMAA (the default), not on the HDR
